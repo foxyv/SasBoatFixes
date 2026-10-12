@@ -20,6 +20,33 @@ boat's handling changes noticeably.
 The fix removes what holds a boat over. It does not change the hulls' weak righting force at speed,
 which is the underlying cause.
 
+## Install
+
+You need Windows, the Steam version of Ships At Sea, and UE4SS installed first.
+
+**1. UE4SS, experimental build.** The game runs on Unreal Engine 5.7, which the stable UE4SS
+release does not support.
+
+- Download `UE4SS_v3.0.1-<build>.zip` from
+  https://github.com/UE4SS-RE/RE-UE4SS/releases/tag/experimental-latest
+- Extract it into the game's `SAS\Binaries\Win64` folder, next to `Sas-Win64-Shipping.exe`. You
+  should end up with `dwmapi.dll` and a `ue4ss` folder there.
+
+**2. The mod.**
+
+1. Download `SasBoatFixes-<version>.zip` from the
+   [latest release](https://github.com/foxyv/SasBoatFixes/releases/latest).
+2. Extract it into the game's `SAS\Binaries\Win64\ue4ss\Mods` folder, so that
+   `ue4ss\Mods\SasBoatFixes\Scripts\main.lua` exists.
+3. Start the game. The fix is on from the start; there is nothing to press.
+
+To check it loaded, look in `ue4ss\UE4SS.log` for the line
+`[SasBoatFixes] loaded: list fix on (F4 toggles), F9 = record boat physics`.
+
+### Uninstall
+
+Delete `ue4ss\Mods\SasBoatFixes` from the game folder.
+
 ## Keys
 
 - **F4** toggles the list fix. It is on by default and comes back on after a game restart.
@@ -36,25 +63,21 @@ F9 writes `boatlog.txt` in the mod's folder under the game's `ue4ss\Mods\SasBoat
 
 The recorder only reads. It is there to diagnose other handling problems the same way this one was.
 
-## Install
-
-Requires the UE4SS experimental build in the game's `SAS\Binaries\Win64` folder (the game is on
-Unreal Engine 5.7).
-
-Copy the `SasBoatFixes` folder into `SAS\Binaries\Win64\ue4ss\Mods`, or run:
-
-```
-.\deploy.ps1
-```
-
-`deploy.ps1` takes `-GameDir` if the game is not in the default Steam library path. In game,
-Ctrl+R reloads UE4SS Lua mods without a restart.
-
 ## Notes
 
 - Tested in solo play. The fix changes a movement setting on characters locally; its effect in
   multiplayer is untested.
 - The mod does all its work from a single timer on the game thread.
+
+## Working on it
+
+```
+.\deploy.ps1              # copy the mod into the game; takes -GameDir for a non-default library
+.\package.ps1 v0.1.0      # build the release zip into dist\
+```
+
+Ctrl+R in game reloads UE4SS Lua mods without a restart, if `EnableHotReloadSystem = 1` is set in
+`ue4ss\UE4SS-settings.ini`.
 
 ## License
 
