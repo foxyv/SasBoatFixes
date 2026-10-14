@@ -20,6 +20,12 @@ boat's handling changes noticeably.
 The fix removes what holds a boat over. It does not change the hulls' weak righting force at speed,
 which is the underlying cause.
 
+**The wake vanishing when you leave the helm.** A boat's wake is drawn only over a square of water
+the game keeps centred on the boat while someone is at the helm. Leave the helm under way and the
+square stays behind; the boat sails out of it within seconds and its wake disappears. While your boat
+has nobody at the helm and you are within 200 m of it, the mod keeps the square on the boat. At the
+helm the game's own handling is left alone. This is always on.
+
 ## Install
 
 You need Windows, the Steam version of Ships At Sea, and UE4SS installed first.
@@ -41,7 +47,7 @@ release does not support.
 3. Start the game. The fix is on from the start; there is nothing to press.
 
 To check it loaded, look in `ue4ss\UE4SS.log` for the line
-`[SasBoatFixes] loaded: list fix on (F4 toggles), F9 = record boat physics`.
+`[SasBoatFixes] loaded: list fix on (F4 toggles), wake fix on, F9 = record boat physics`.
 
 ### Uninstall
 

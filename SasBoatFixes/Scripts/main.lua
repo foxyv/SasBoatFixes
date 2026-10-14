@@ -3,6 +3,7 @@
 --    deck they stand on. This is a change to how the game behaves. See "List fix" below.
 -- F9 starts and stops a physics recording of the boat being driven, written to boatlog.txt in this
 --    mod's folder. The recorder only reads.
+-- The wake fix is always on: a boat's wake keeps going when nobody is at the helm. See "Wake fix".
 
 local TICK_MS = 250
 local TICKS_PER_SECOND = 4
@@ -269,6 +270,51 @@ local function RecordBoat()
 end
 
 ---------------------------------------------------------------------------------------------------
+-- Wake fix. The water is NVIDIA WaveWorks, and a boat's wake is its "local waves" simulation, which
+-- covers a square of water around a centre (LocalWavesSimulationSettings.SimulationDomainCenter on
+-- the WaveWorksComponent). The game keeps that square on the boat only while someone is at the helm.
+-- Leave the helm under way and the square stays behind: the boat sails out of it in a few seconds and
+-- its wake vanishes. While your boat has nobody at the helm, this keeps the square on it, ten times a
+-- second. At the helm the game's own handling is left alone.
+
+local WAKE_MS = 100
+local WAKE_NEAR_CM = 20000   -- only while you are within 200 m of the boat
+local WakeBoat, WakeWater, WakeLookAgain = nil, {}, 0
+local WakeHolding = false
+
+local function WakeFix()
+    WakeLookAgain = WakeLookAgain - 1
+    if WakeLookAgain <= 0 then  -- the boat and the water are looked up once a second
+        WakeLookAgain = 10
+        WakeBoat = DrivenBoat()
+        WakeWater = {}
+        for _, comp in ipairs(FindAllOf("WaveWorksComponent") or {}) do
+            local ok, real = pcall(function() return not comp:GetFullName():find("Default__", 1, true) end)
+            if ok and real then WakeWater[#WakeWater + 1] = comp end
+        end
+    end
+    local boat = WakeBoat
+    if not IsObject(boat) or #WakeWater == 0 then return end
+    local driven = false
+    pcall(function() driven = IsObject(boat.DriverComponent.Driver) end)
+    local at = boat:K2_GetActorLocation()
+    local near = false
+    pcall(function()
+        local here = FindFirstOf("PlayerController").Pawn:K2_GetActorLocation()
+        near = (at.X - here.X) ^ 2 + (at.Y - here.Y) ^ 2 < WAKE_NEAR_CM ^ 2
+    end)
+    local hold = not driven and near
+    if hold ~= WakeHolding then
+        WakeHolding = hold
+        print("[SasBoatFixes] wake fix " .. (hold and "keeping the wake on the boat: nobody at the helm" or "standing by: the boat is driven, or you are away from it") .. "\n")
+    end
+    if not hold then return end
+    for _, comp in ipairs(WakeWater) do
+        pcall(function() comp.LocalWavesSimulationSettings.SimulationDomainCenter = { X = at.X, Y = at.Y } end)
+    end
+end
+
+---------------------------------------------------------------------------------------------------
 -- Key presses only set flags. All the work happens in one timer on the game thread, which is the
 -- only place game objects may be touched, so this mod's Lua never runs on two threads at once.
 
@@ -293,6 +339,10 @@ end
 
 if LoopInGameThreadWithDelay then
     LoopInGameThreadWithDelay(TICK_MS, Tick)
+    LoopInGameThreadWithDelay(WAKE_MS, function()
+        pcall(WakeFix)
+        return false
+    end)
 else
     -- Older UE4SS builds: a single background timer that hands each tick to the game thread.
     LoopAsync(TICK_MS, function()
@@ -301,4 +351,4 @@ else
     end)
 end
 
-print("[SasBoatFixes] loaded: list fix on (F4 toggles), F9 = record boat physics\n")
+print("[SasBoatFixes] loaded: list fix on (F4 toggles), wake fix on, F9 = record boat physics\n")
