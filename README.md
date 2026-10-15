@@ -27,6 +27,13 @@ has nobody at the helm and you are within 200 m of it, the mod slides that squar
 a short step at a time, so the wake keeps drawing. Jumping the square onto the boat fills it with
 white water. At the helm the game's own handling is left alone. This is always on.
 
+**The invert mouse setting not applying in a crane's camera.** The game applies invert mouse (and
+invert stick) through input modifiers on the look binding of each input context. The character, boat
+and water cannon contexts have them. The crane's does not, so in a crane's camera the setting did
+nothing. The mod adds the character context's own inversion modifiers to the crane's look binding for
+the mouse and the right stick, so the setting is followed as it is everywhere else. Sensitivity is
+left as the game has it. This is always on.
+
 ## Install
 
 You need Windows, the Steam version of Ships At Sea, and UE4SS installed first.
