@@ -4,6 +4,8 @@
 -- F9 starts and stops a physics recording of the boat being driven, written to boatlog.txt in this
 --    mod's folder. The recorder only reads.
 -- The wake fix is always on: a boat's wake keeps going when nobody is at the helm. See "Wake fix".
+-- The crane view fix is always on: the game's invert mouse setting applies in a crane's camera. See
+--    "Crane look fix".
 
 local TICK_MS = 250
 local TICKS_PER_SECOND = 4
@@ -274,27 +276,138 @@ end
 -- covers a square of water around a centre (LocalWavesSimulationSettings.SimulationDomainCenter on
 -- the WaveWorksComponent). The game keeps that square on the boat only while someone is at the helm.
 -- Leave the helm under way and the square stays behind: the boat sails out of it in a few seconds and
--- its wake vanishes. While your boat has nobody at the helm, this keeps the square on it, ten times a
--- second. At the helm the game's own handling is left alone.
+-- its wake vanishes. While your boat has nobody at the helm, this slides the square along with the
+-- boat. The slide is a short step each frame. Dropping the square onto the boat in one move, or
+-- shoving it by a metre several times a second, smears the foam across the whole square, which draws
+-- as a block of white water around the ship. At the helm the game's own handling is left alone.
+-- Only the square the boat's own wake uses is moved. Replacing the centre with a new value writes
+-- just those two numbers; writing the whole setting would clear the foam and the size of the square.
 
-local WAKE_MS = 100
-local WAKE_NEAR_CM = 20000   -- only while you are within 200 m of the boat
-local WakeBoat, WakeWater, WakeLookAgain = nil, {}, 0
+local WAKE_MS = 16
+local WAKE_LOOKUP_TICKS = 60   -- the boat and the water are looked up about once a second
+local WAKE_NEAR_CM = 20000     -- only while you are within 200 m of the boat
+local WAKE_MAX_STEP_CM = 80    -- a fast boat moves less than this in one step; more than this smears foam
+local WakeBoat, WakeWater, WakeLookAgain = nil, nil, 0
 local WakeHolding = false
+
+local function WakeNumber(fn)
+    local ok, value = pcall(fn)
+    if ok and type(value) == "number" then return value end
+    return nil
+end
+
+local function SameObject(a, b)
+    if a == b then return true end
+    local ok, same = pcall(function() return a:GetAddress() == b:GetAddress() end)
+    return ok and same
+end
+
+-- The water component the boat disturbs for its wake, or nil when this boat has none.
+local function BoatWakeWater(boat)
+    local found = nil
+    pcall(function()
+        for _, dist in ipairs(FindAllOf("BoatWaterLocalDisturbanceComponent") or {}) do
+            if not dist:GetFullName():find("Default__", 1, true) and SameObject(dist:GetOwner(), boat)
+                and IsObject(dist.WaveWorksComponent) then
+                found = dist.WaveWorksComponent
+                break
+            end
+        end
+    end)
+    return found
+end
+
+-- The local-waves square already nearest the boat: the one the game was keeping on it.
+local function NearestWakeWater(at)
+    local best, bestDistance = nil, nil
+    for _, comp in ipairs(FindAllOf("WaveWorksComponent") or {}) do
+        pcall(function()
+            if comp:GetFullName():find("Default__", 1, true) then return end
+            if comp.bUseLocalWaves == false then return end
+            local center = comp.LocalWavesSimulationSettings.SimulationDomainCenter
+            local dx, dy = center.X - at.X, center.Y - at.Y
+            local distance = dx * dx + dy * dy
+            if not bestDistance or distance < bestDistance then best, bestDistance = comp, distance end
+        end)
+    end
+    return best
+end
+
+-- A wiped foam setup (every rate at zero) or a broken square size is put back from the class default.
+-- That is the state left behind by writing the centre as a whole new setting.
+local function RepairWakeSettings(comp)
+    local size = WakeNumber(function() return comp.LocalWavesSimulationSettings.SimulationDomainWorldspaceSize end)
+    local amount = WakeNumber(function() return comp.LocalWavesSimulationSettings.FoamSettings.FoamGenerationAmount end)
+    local dissipate = WakeNumber(function() return comp.LocalWavesSimulationSettings.FoamSettings.FoamDissipationSpeed end)
+    local falloff = WakeNumber(function() return comp.LocalWavesSimulationSettings.FoamSettings.FoamFalloffSpeed end)
+    local sizeBroken = not size or size < 100 or size > 10000000
+    local foamBroken = amount == 0 and dissipate == 0 and falloff == 0
+    if not sizeBroken and not foamBroken then return end
+    local cdo = nil
+    pcall(function() cdo = comp:GetClass():GetDefaultObject() end)
+    if not IsObject(cdo) then
+        pcall(function()
+            local name = comp:GetClass():GetFName():ToString()
+            cdo = StaticFindObject("/Script/Sas.Default__" .. name)
+            if not IsObject(cdo) then cdo = StaticFindObject("/Script/WaveWorks.Default__" .. name) end
+        end)
+    end
+    if not IsObject(cdo) then
+        print("[SasBoatFixes] wake fix: the water square's settings look wiped, and the original could not be read back\n")
+        return
+    end
+    pcall(function()
+        local live, def = comp.LocalWavesSimulationSettings, cdo.LocalWavesSimulationSettings
+        if sizeBroken then live.SimulationDomainWorldspaceSize = def.SimulationDomainWorldspaceSize end
+        if foamBroken then
+            local lf, df = live.FoamSettings, def.FoamSettings
+            lf.FoamWhitecapsThreshold = df.FoamWhitecapsThreshold
+            lf.FoamGenerationThreshold = df.FoamGenerationThreshold
+            lf.FoamGenerationAmount = df.FoamGenerationAmount
+            lf.FoamDissipationSpeed = df.FoamDissipationSpeed
+            lf.FoamFalloffSpeed = df.FoamFalloffSpeed
+            live.AmplitudeMultiplier = def.AmplitudeMultiplier
+            live.LateralMultiplier = def.LateralMultiplier
+        end
+    end)
+    local restored = WakeNumber(function() return comp.LocalWavesSimulationSettings.SimulationDomainWorldspaceSize end)
+    print("[SasBoatFixes] wake fix restored the water square's settings (now " .. tostring(restored) .. " cm across)\n")
+end
+
+-- Moves the square's centre towards the boat by at most one short step.
+local function SlideWakeCenter(comp, x, y)
+    local cx = WakeNumber(function() return comp.LocalWavesSimulationSettings.SimulationDomainCenter.X end)
+    local cy = WakeNumber(function() return comp.LocalWavesSimulationSettings.SimulationDomainCenter.Y end)
+    local tx, ty = x, y
+    if cx and cy then
+        local dx, dy = x - cx, y - cy
+        local dist = math.sqrt(dx * dx + dy * dy)
+        if dist > WAKE_MAX_STEP_CM then
+            local scale = WAKE_MAX_STEP_CM / dist
+            tx, ty = cx + dx * scale, cy + dy * scale
+        end
+    end
+    pcall(function()
+        local center = comp.LocalWavesSimulationSettings.SimulationDomainCenter
+        center.X = tx
+        center.Y = ty
+    end)
+end
 
 local function WakeFix()
     WakeLookAgain = WakeLookAgain - 1
-    if WakeLookAgain <= 0 then  -- the boat and the water are looked up once a second
-        WakeLookAgain = 10
+    if WakeLookAgain <= 0 then
+        WakeLookAgain = WAKE_LOOKUP_TICKS
         WakeBoat = DrivenBoat()
-        WakeWater = {}
-        for _, comp in ipairs(FindAllOf("WaveWorksComponent") or {}) do
-            local ok, real = pcall(function() return not comp:GetFullName():find("Default__", 1, true) end)
-            if ok and real then WakeWater[#WakeWater + 1] = comp end
+        WakeWater = nil
+        if IsObject(WakeBoat) then
+            local at = WakeBoat:K2_GetActorLocation()
+            WakeWater = BoatWakeWater(WakeBoat) or NearestWakeWater(at)
+            if IsObject(WakeWater) then RepairWakeSettings(WakeWater) end
         end
     end
-    local boat = WakeBoat
-    if not IsObject(boat) or #WakeWater == 0 then return end
+    local boat, comp = WakeBoat, WakeWater
+    if not IsObject(boat) or not IsObject(comp) then return end
     local driven = false
     pcall(function() driven = IsObject(boat.DriverComponent.Driver) end)
     local at = boat:K2_GetActorLocation()
@@ -309,9 +422,91 @@ local function WakeFix()
         print("[SasBoatFixes] wake fix " .. (hold and "keeping the wake on the boat: nobody at the helm" or "standing by: the boat is driven, or you are away from it") .. "\n")
     end
     if not hold then return end
-    for _, comp in ipairs(WakeWater) do
-        pcall(function() comp.LocalWavesSimulationSettings.SimulationDomainCenter = { X = at.X, Y = at.Y } end)
+    SlideWakeCenter(comp, at.X, at.Y)
+end
+
+---------------------------------------------------------------------------------------------------
+-- Crane look fix. The game applies the invert mouse and invert stick settings through input modifiers
+-- (LAB132InputModifierMouseInversion, LAB132InputModifierControllerInversion) set on the look
+-- binding of each input context: the character's, the boat's, the water cannon's. The crane's
+-- (IMC_CraneContext) look binding, the same IA_CharacterLook action, has none, so in a crane's camera
+-- the setting does nothing. This adds the character context's own inversion modifiers to the crane's
+-- look bindings. The same modifier object is shared; it holds no state and follows the setting.
+-- Nothing is changed in the saved settings, and the sensitivity settings are left as they were.
+
+local CRANE_CONTEXT = "/Game/ShipsAtSea/Input/Crane/IMC_CraneContext.IMC_CraneContext"
+local LOOK_CONTEXT = "/Game/ShipsAtSea/Input/Character/IMC_Character.IMC_Character"
+local CraneLookTries, CraneLookDone = 0, false
+
+local function ContextObject(path)
+    local obj = StaticFindObject(path)
+    if not IsObject(obj) then pcall(function() obj = LoadAsset(path) end) end
+    return IsObject(obj) and obj or nil
+end
+
+local function ModifierName(mod)
+    local ok, name = pcall(function() return mod:GetFullName() end)
+    return ok and tostring(name) or ""
+end
+
+-- The modifier of a binding whose name has the text in it (MouseInversion, ControllerInversion), or nil.
+local function InversionFor(mapping, text)
+    for i = 1, #mapping.Modifiers do
+        local mod = mapping.Modifiers[i]
+        if ModifierName(mod):find(text, 1, true) then return mod end
     end
+    return nil
+end
+
+local function KeyOf(mapping)
+    local ok, key = pcall(function() return mapping.Key.KeyName:ToString() end)
+    return ok and tostring(key) or ""
+end
+
+local function CraneLookFix()
+    if CraneLookDone then return end
+    CraneLookTries = CraneLookTries + 1
+    local crane, look = ContextObject(CRANE_CONTEXT), ContextObject(LOOK_CONTEXT)
+    if not crane or not look then
+        if CraneLookTries == 20 then print("[SasBoatFixes] crane look fix: input contexts not found\n") end
+        return
+    end
+    CraneLookDone = true
+    local lookMaps, craneMaps = look.DefaultKeyMappings.Mappings, crane.DefaultKeyMappings.Mappings
+    local added = 0
+    for _, spec in ipairs({ { key = "Mouse2D", kind = "MouseInversion" },
+                            { key = "Gamepad_Right2D", kind = "ControllerInversion" } }) do
+        local source = nil
+        for i = 1, #lookMaps do
+            local m = lookMaps[i]
+            if KeyOf(m) == spec.key and ModifierName(m.Action):find("IA_CharacterLook", 1, true) then
+                source = InversionFor(m, spec.kind)
+                break
+            end
+        end
+        if not source then
+            print("[SasBoatFixes] crane look fix: no " .. spec.key .. " inversion modifier found to copy\n")
+        else
+            for i = 1, #craneMaps do
+                local m = craneMaps[i]
+                if KeyOf(m) == spec.key and ModifierName(m.Action):find("IA_CharacterLook", 1, true) then
+                    if InversionFor(m, spec.kind) then
+                        print("[SasBoatFixes] crane look fix: " .. spec.key .. " already inverts\n")
+                    else
+                        local before = #m.Modifiers
+                        pcall(function() m.Modifiers[before + 1] = source end)
+                        if #m.Modifiers > before then
+                            added = added + 1
+                            print("[SasBoatFixes] crane look fix: " .. spec.key .. " in the crane now follows the invert setting\n")
+                        else
+                            print("[SasBoatFixes] crane look fix: could not add the modifier to " .. spec.key .. "\n")
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return added
 end
 
 ---------------------------------------------------------------------------------------------------
@@ -343,6 +538,13 @@ if LoopInGameThreadWithDelay then
         pcall(WakeFix)
         return false
     end)
+    LoopInGameThreadWithDelay(2000, function()
+        if not CraneLookDone and CraneLookTries < 30 then
+            local ok, err = pcall(CraneLookFix)
+            if not ok then print("[SasBoatFixes] crane look fix failed: " .. tostring(err):gsub("\n.*", "") .. "\n") end
+        end
+        return false
+    end)
 else
     -- Older UE4SS builds: a single background timer that hands each tick to the game thread.
     LoopAsync(TICK_MS, function()
@@ -351,4 +553,4 @@ else
     end)
 end
 
-print("[SasBoatFixes] loaded: list fix on (F4 toggles), wake fix on, F9 = record boat physics\n")
+print("[SasBoatFixes] loaded: list fix on (F4 toggles), wake fix on, crane look fix on, F9 = record boat physics\n")

@@ -23,8 +23,9 @@ which is the underlying cause.
 **The wake vanishing when you leave the helm.** A boat's wake is drawn only over a square of water
 the game keeps centred on the boat while someone is at the helm. Leave the helm under way and the
 square stays behind; the boat sails out of it within seconds and its wake disappears. While your boat
-has nobody at the helm and you are within 200 m of it, the mod keeps the square on the boat. At the
-helm the game's own handling is left alone. This is always on.
+has nobody at the helm and you are within 200 m of it, the mod slides that square along with the boat,
+a short step at a time, so the wake keeps drawing. Jumping the square onto the boat fills it with
+white water. At the helm the game's own handling is left alone. This is always on.
 
 ## Install
 
