@@ -77,6 +77,12 @@ F9 writes `boatlog.txt` in the mod's folder under the game's `ue4ss\Mods\SasBoat
 
 The recorder only reads. It is there to diagnose other handling problems the same way this one was.
 
+**A towing bollard holding cargo.** A boat's towing bollard can take hold of a crate instead of a boat,
+and the rope then drags the boat about with it. Towing is for boats, so once a second the mod casts off
+any tow whose far end is cargo, and logs `tow fix:` when it does. (This was a guess at a crate that
+pulled a boat over; the cause turned out to be a dock bollard carried off by the crate, which the crane
+operator mod now puts back. The tow fix has not been seen to fire.)
+
 ## Notes
 
 - Tested in solo play. The fix changes a movement setting on characters locally; its effect in
@@ -89,6 +95,20 @@ The recorder only reads. It is there to diagnose other handling problems the sam
 .\deploy.ps1              # copy the mod into the game; takes -GameDir for a non-default library
 .\package.ps1 v0.1.0      # build the release zip into dist\
 ```
+
+The Lua check also runs on GitHub on every push (`.github/workflows/ci.yml`).
+
+Check the Lua before trying it in the game:
+
+```
+python tools/check_lua.py   # luacheck, a syntax check and the count of top-level locals
+```
+
+It uses [luacheck](https://github.com/lunarmodules/luacheck/releases) (put `luacheck.exe` in
+`..\.tools\luacheck\`, or set `LUACHECK`; settings are in `.luacheckrc`) and, for the syntax check,
+`pip install lupa`. luacheck catches a function that calls a name defined further down the file, which
+is a runtime error the game only shows as a silently failing feature. A Lua file may hold only 200
+top-level local variables, and the script warns from 170.
 
 Ctrl+R in game reloads UE4SS Lua mods without a restart, if `EnableHotReloadSystem = 1` is set in
 `ue4ss\UE4SS-settings.ini`.

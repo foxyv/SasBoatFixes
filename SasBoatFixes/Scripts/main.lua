@@ -7,6 +7,25 @@
 -- The crane view fix is always on: the game's invert mouse setting applies in a crane's camera. See
 --    "Crane look fix".
 
+
+-- Which copy of this script is running. The log says a release name and a checksum of the file itself
+-- (tools/check_lua.py --running compares it with the repository's), so there is never a doubt whether the
+-- game loaded the version that was meant to be deployed.
+SCRIPT_VERSION = "2026-10-17.1"
+function ScriptChecksum()
+    local file = io.open(debug.getinfo(1, "S").source:sub(2), "rb")
+    if not file then return "unreadable", 0 end
+    local text = file:read("*a")
+    file:close()
+    local hash = 2166136261  -- FNV-1a, 32 bits
+    for i = 1, #text do hash = ((hash ~ text:byte(i)) * 16777619) & 0xFFFFFFFF end
+    return string.format("%08X", hash), #text
+end
+do
+    local checksum, bytes = ScriptChecksum()
+    print("[SasBoatFixes] version " .. SCRIPT_VERSION .. ", file checksum " .. checksum .. " (" .. bytes .. " bytes)\n")
+end
+
 local TICK_MS = 250
 local TICKS_PER_SECOND = 4
 
@@ -521,6 +540,32 @@ RegisterKeyBind(Key.F9, function()
     BoatLogToggle = true
 end)
 
+---------------------------------------------------------------------------------------------------
+-- Tow fix. A boat's towing bollard can take hold of a crate or other piece of cargo instead of a boat,
+-- and the rope then drags the boat about with it (a crane operator moving the crate into the hold
+-- pulled the boat over). Towing is for boats, so a tow whose far end is cargo is cast off.
+
+local TowLogged = {}
+
+local function TowFix()
+    for _, comp in ipairs(FindAllOf("TowingComponent") or {}) do
+        pcall(function()
+            if comp:GetFullName():find("Default__", 1, true) then return end
+            local towed = comp:GetTowedActor()
+            if not IsObject(towed) then return end
+            local cargo = false
+            pcall(function() cargo = towed:IsA("/Script/Sas.HeavyCargo") end)
+            if not cargo then return end
+            local name = towed:GetFullName()
+            if not TowLogged[name] then
+                TowLogged[name] = true
+                print("[SasBoatFixes] tow fix: " .. comp:GetFullName() .. " had taken hold of cargo (" .. name .. "); casting it off\n")
+            end
+            comp:StopTowing()
+        end)
+    end
+end
+
 local Ticks = 0
 
 local function Tick()
@@ -536,6 +581,10 @@ if LoopInGameThreadWithDelay then
     LoopInGameThreadWithDelay(TICK_MS, Tick)
     LoopInGameThreadWithDelay(WAKE_MS, function()
         pcall(WakeFix)
+        return false
+    end)
+    LoopInGameThreadWithDelay(1000, function()
+        pcall(TowFix)
         return false
     end)
     LoopInGameThreadWithDelay(2000, function()
