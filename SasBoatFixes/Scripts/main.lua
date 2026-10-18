@@ -6,12 +6,14 @@
 -- The wake fix is always on: a boat's wake keeps going when nobody is at the helm. See "Wake fix".
 -- The crane view fix is always on: the game's invert mouse setting applies in a crane's camera. See
 --    "Crane look fix".
+-- The reward watch is always on and only reads: when a mission's completion screen is built, the log gets the rewards
+--    it was given (REWARD: lines) and, 5 and 60 seconds later, what the balance did. See "Reward watch".
 
 
 -- Which copy of this script is running. The log says a release name and a checksum of the file itself
 -- (tools/check_lua.py --running compares it with the repository's), so there is never a doubt whether the
 -- game loaded the version that was meant to be deployed.
-SCRIPT_VERSION = "2026-10-17.1"
+SCRIPT_VERSION = "2026-10-18.1"
 function ScriptChecksum()
     local file = io.open(debug.getinfo(1, "S").source:sub(2), "rb")
     if not file then return "unreadable", 0 end
@@ -566,6 +568,128 @@ local function TowFix()
     end
 end
 
+---------------------------------------------------------------------------------------------------
+-- Reward watch. A mission has been seen to finish with "no reward" on the completion screen and notice, with the
+-- money missing from the ledger or arriving late. Nothing is changed: when the game builds the completion screen the
+-- rewards it was given are written to the log (REWARD: lines), with the balance at that moment, and again 5 and 60
+-- seconds later with what the balance did and the newest ledger lines, so a reward that was not paid, or was paid
+-- late, can be told from one that was only not shown.
+
+local RewardChecks = {}   -- { at = os.clock() when due, label = text, capital = number at the screen, money = shown money }
+local RewardHooked = false
+REWARD_CHECK_AFTER_S = { 5, 60 }
+
+-- Hundredths of a krone as text: 2561500 -> "25 615.00".
+function Krone(raw)
+    local negative = raw < 0
+    raw = math.abs(raw)
+    local whole, cents = raw // 100, raw % 100
+    local text = tostring(whole):reverse():gsub("(%d%d%d)", "%1 "):reverse():gsub("^ ", "")
+    return string.format("%s%s.%02d", negative and "-" or "", text, cents)
+end
+
+-- One line for the log: what the completion screen was given.
+function RewardLine(title, shortId, rewards)
+    if #rewards == 0 then
+        return string.format('REWARD: the completion screen for "%s" %s lists NO rewards', title, shortId)
+    end
+    local parts, money = {}, 0
+    for _, reward in ipairs(rewards) do
+        local isMoney = reward.kind:find("Money", 1, true) ~= nil
+        parts[#parts + 1] = string.format("%s %s%s", reward.kind, isMoney and Krone(reward.amount * 100) or tostring(reward.amount),
+            reward.stage ~= "" and (" (" .. reward.stage .. ")") or "")
+        if isMoney then money = money + reward.amount end
+    end
+    return string.format('REWARD: the completion screen for "%s" %s lists %d reward(s): %s (money %s)', title, shortId, #rewards,
+        table.concat(parts, ", "), Krone(money * 100))
+end
+
+-- The player's company finance: the balance in hundredths and the newest ledger lines (the game lists newest first).
+local function Finance()
+    local best, bestSize = nil, -1
+    for _, comp in ipairs(FindAllOf("FinanceComponent") or {}) do
+        pcall(function()
+            if comp:GetFullName():find("Default__", 1, true) then return end
+            local size = 0
+            pcall(function() Each(comp.Ledger.Transactions, function() size = size + 1 end) end)
+            local owner = ""
+            pcall(function() owner = comp:GetOwner():GetClass():GetFName():ToString() end)
+            if owner:find("Company", 1, true) or owner:find("Player", 1, true) then size = size + 1000000 end
+            if size > bestSize then best, bestSize = comp, size end
+        end)
+    end
+    if not best then return nil end
+    local result = { lines = {} }
+    pcall(function() result.capital = math.tointeger(best.Capital.Value) end)
+    pcall(function()
+        Each(best.Ledger.Transactions, function(tx)
+            if #result.lines >= 6 then return end
+            result.lines[#result.lines + 1] = string.format("%d/%d %s %s", tx.Date.Day.Day + 0, tx.Date.Month + 1,
+                tx.Description:ToString(), Krone(math.tointeger(tx.Value.Value) or 0))
+        end)
+    end)
+    return result.capital and result or nil
+end
+
+local function OnRewards(widget, received)
+    local title, shortId, rewards = "?", "", {}
+    pcall(function() title = widget.MissionTitle:GetText():ToString() end)
+    pcall(function() shortId = widget.ShortID:GetText():ToString() end)
+    pcall(function()
+        Each(received, function(entry)
+            local kind, stage = "?", ""
+            pcall(function() kind = entry.RewardType:GetFName():ToString() end)
+            if kind == "?" then pcall(function() kind = entry.RewardType:GetClass():GetFName():ToString() end) end
+            pcall(function() stage = entry.RewardsDescription:ToString() end)
+            rewards[#rewards + 1] = { kind = kind, amount = entry.amount + 0, stage = stage }
+        end)
+    end)
+    local money = 0
+    for _, reward in ipairs(rewards) do
+        if reward.kind:find("Money", 1, true) then money = money + reward.amount end
+    end
+    local finance = Finance()
+    print("[SasBoatFixes] " .. RewardLine(title, shortId, rewards)
+        .. (finance and (", balance " .. Krone(finance.capital)) or ", balance unknown") .. "\n")
+    for _, delay in ipairs(REWARD_CHECK_AFTER_S) do
+        RewardChecks[#RewardChecks + 1] = { at = os.clock() + delay, delay = delay, label = title .. " " .. shortId,
+                                            capital = finance and finance.capital, money = money }
+    end
+end
+
+-- Hooks the completion screen once the game has loaded it (its blueprint is only loaded when first needed).
+local function HookRewards()
+    if RewardHooked then return end
+    local ok = pcall(function()
+        RegisterHook("/Game/ShipsAtSea/UI/Missions/WBP_MissionSuccess.WBP_MissionSuccess_C:SetReceivedRewards", function(self, received)
+            pcall(function() OnRewards(self:get(), received:get()) end)
+        end)
+    end)
+    if ok then
+        RewardHooked = true
+        print("[SasBoatFixes] reward watch: following the mission completion screen\n")
+    end
+end
+
+local function RewardWatch()
+    HookRewards()
+    local now = os.clock()
+    local due, waiting = {}, {}
+    for _, check in ipairs(RewardChecks) do
+        table.insert(now >= check.at and due or waiting, check)
+    end
+    RewardChecks = waiting
+    for _, check in ipairs(due) do
+        local finance = Finance()
+        if finance and check.capital then
+            print(string.format("[SasBoatFixes] REWARD: %s: %d s after the screen the balance has changed by %s (shown money %s); newest ledger: %s\n",
+                check.label, check.delay, Krone(finance.capital - check.capital), Krone(check.money * 100), table.concat(finance.lines, " | ")))
+        else
+            print("[SasBoatFixes] REWARD: " .. check.label .. ": could not read the balance\n")
+        end
+    end
+end
+
 local Ticks = 0
 
 local function Tick()
@@ -585,6 +709,7 @@ if LoopInGameThreadWithDelay then
     end)
     LoopInGameThreadWithDelay(1000, function()
         pcall(TowFix)
+        pcall(RewardWatch)
         return false
     end)
     LoopInGameThreadWithDelay(2000, function()
@@ -602,4 +727,10 @@ else
     end)
 end
 
-print("[SasBoatFixes] loaded: list fix on (F4 toggles), wake fix on, crane look fix on, F9 = record boat physics\n")
+print("[SasBoatFixes] loaded: list fix on (F4 toggles), wake fix on, crane look fix on, reward watch on, F9 = record boat physics\n")
+
+-- For the tests (tests/test_reward_watch.py): when a test sets SAS_TEST before loading this script, what it needs is
+-- handed out in SasTest. In the game SAS_TEST is never set.
+if SAS_TEST then
+    SasTest = { DueNow = function() for _, check in ipairs(RewardChecks) do check.at = 0 end end }
+end

@@ -30,3 +30,6 @@ jobs:
 
       - name: Check the Lua
         run: python tools/check_lua.py
+
+      - name: Run the tests
+        run: python -m pytest -q tests

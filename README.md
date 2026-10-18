@@ -34,6 +34,20 @@ nothing. The mod adds the character context's own inversion modifiers to the cra
 the mouse and the right stick, so the setting is followed as it is everywhere else. Sensitivity is
 left as the game has it. This is always on.
 
+**Missions that finish with "no reward".** A mission has been seen to finish with a "no reward" completion screen
+and notice. This is not fixed, only watched: when the game builds the completion screen, the rewards it was
+given are written to `UE4SS.log`, and 5 and 60 seconds later the log says what the company's balance did
+and shows the newest ledger lines. The lines start with `REWARD:`:
+
+```
+REWARD: the completion screen for "2 Medium goods to Mosken" #DL-1234 lists 2 reward(s): MissionReward_Money_0 25 615.00 (Cargo loaded), ... (money 51 230.00), balance 3 154 567.91
+REWARD: 2 Medium goods to Mosken #DL-1234: 5 s after the screen the balance has changed by 51 230.00 (shown money 51 230.00); newest ledger: ...
+```
+
+"lists NO rewards" is the screen with nothing on it. If the screen listed money and the balance did not change, the
+reward was shown but not paid; if the balance rose later, it was paid late. If you see "no reward", send the
+`REWARD:` lines (and the minute around them) from the log. This is always on and only reads.
+
 ## Install
 
 You need Windows, the Steam version of Ships At Sea, and UE4SS installed first.
@@ -102,6 +116,7 @@ Check the Lua before trying it in the game:
 
 ```
 python tools/check_lua.py   # luacheck, a syntax check and the count of top-level locals
+python -m pytest tests      # the reward watch, against a stand-in for the game
 ```
 
 It uses [luacheck](https://github.com/lunarmodules/luacheck/releases) (put `luacheck.exe` in
